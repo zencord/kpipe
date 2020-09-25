@@ -1,7 +1,6 @@
 package kpipe
 
 import (
-	"context"
 	"math/rand"
 	"net"
 	"testing"
@@ -9,12 +8,14 @@ import (
 
 	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/apps/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func TestConnectingToRunningPod(t *testing.T) {
 	forward := createForwarder(t)
 
-	conn, err := forward.Dial(context.Background(), "default", "redis")
+	conn, err := forward.Dial("default", "redis")
 	require.Nil(t, err)
 
 	verifyPortCommunication(t, conn)
@@ -23,7 +24,7 @@ func TestConnectingToRunningPod(t *testing.T) {
 func TestBadPort(t *testing.T) {
 	forward := createForwarder(t)
 
-	conn, err := forward.Dial(context.Background(), "default", "redis:42")
+	conn, err := forward.Dial("default", "redis:42")
 	require.Nil(t, err)
 
 	bytes := make([]byte, 1, 1)
@@ -32,11 +33,32 @@ func TestBadPort(t *testing.T) {
 	require.Contains(t, err.Error(), "Connection refused")
 }
 
-func TestBadService(t *testing.T) {
+func TestNoExistentService(t *testing.T) {
 	forward := createForwarder(t)
 
-	_, err := forward.Dial(context.Background(), "default", "fakaka")
+	_, err := forward.Dial("default", "fakaka")
 	require.Contains(t, err.Error(), "fakaka")
+}
+
+func TestFailureAndRecoveryForUnavailablePod(t *testing.T) {
+	forward := createForwarder(t)
+	forward.SetResolver(func(kube *kubernetes.Clientset, ns, service string) bool {
+
+		err := PatchDeploymentObject(kube, "default", "broken", func(deployment *v1.Deployment) {
+			replicas := int32(1)
+			deployment.Spec.Replicas = &replicas
+
+		})
+
+		require.Nil(t, err)
+
+		return WaitForServiceRunning(kube, "default", "broken", 30*time.Second) == nil
+	})
+
+	conn, err := forward.Dial("default", "broken")
+	require.Nil(t, err)
+
+	verifyPortCommunication(t, conn)
 }
 
 func createForwarder(t *testing.T) *PipeForward {

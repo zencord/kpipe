@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken
+spec:
+  selector:
+    matchLabels:
+      appid: broken
+  strategy:
+    type: Recreate
+  replicas: 0
+  template:
+    metadata:
+      labels:
+        appid: broken
+    spec:
+      restartPolicy: Always
+      containers:
+        - image: redis:5.0.3
+          name: broken
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 1
+            periodSeconds: 1
+          ports:
+            - containerPort: 6379
+              name: transport
+              protocol: TCP

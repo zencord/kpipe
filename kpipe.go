@@ -16,7 +16,6 @@ import (
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -26,10 +25,13 @@ import (
 
 const portForwardProtocolV1Name = "portforward.k8s.io"
 
+type Resolver func(kube *kubernetes.Clientset, namespace string, service string) bool
+
 type PipeForward struct {
-	config    *rest.Config
-	mux       sync.Mutex
-	requestId int
+	config     *rest.Config
+	mux        sync.Mutex
+	requestId  int
+	podResolve Resolver
 }
 
 func New() (*PipeForward, error) {
@@ -43,16 +45,17 @@ func NewFromFile(configFile string) (*PipeForward, error) {
 
 	return &PipeForward{
 		config: config,
+		podResolve: func(_ *kubernetes.Clientset, namespace string, service string) bool {
+			return false
+		},
 	}, nil
 }
 
-func getPodsForSvc(svc *v1.Service, namespace string, k8sClient *kubernetes.Clientset) (*v1.PodList, error) {
-	set := labels.Set(svc.Spec.Selector)
-	listOptions := metav1.ListOptions{LabelSelector: set.AsSelector().String()}
-	return k8sClient.CoreV1().Pods(namespace).List(context.TODO(), listOptions)
+func (p *PipeForward) SetResolver(resolver Resolver) {
+	p.podResolve = resolver
 }
 
-func (p *PipeForward) getPodNameFromService(namespace, service string) (string, []int32, error) {
+func (p *PipeForward) getPodNameFromService(namespace, service string, shouldRetry bool) (string, []int32, error) {
 	clientset, err := kubernetes.NewForConfig(p.config)
 
 	if err != nil {
@@ -72,13 +75,19 @@ func (p *PipeForward) getPodNameFromService(namespace, service string) (string, 
 				return "", nil, errors.Wrap(err, "failed to get pods for service:"+service)
 			}
 			for _, pod := range pods.Items {
-				ports := getPorts(pod)
-				return pod.Name, ports, nil
+				if pod.Status.Phase == "Running" {
+					ports := getPorts(pod)
+					return pod.Name, ports, nil
+				}
 			}
 		}
 	}
 
-	return "", nil, errors.New("failed to find any active pod for " + service + " in namespace " + namespace)
+	if shouldRetry && p.podResolve(clientset, namespace, service) {
+		return p.getPodNameFromService(namespace, service, false)
+	}
+
+	return "", nil, &NoActivePodsForService{ServiceName: service, Namespace: namespace}
 }
 
 func getPorts(pod v1.Pod) []int32 {
@@ -92,7 +101,7 @@ func getPorts(pod v1.Pod) []int32 {
 	return ports
 }
 
-func (p *PipeForward) Dial(ctx context.Context, namespace, service string) (net.Conn, error) {
+func (p *PipeForward) Dial(namespace, service string) (net.Conn, error) {
 
 	service, port, err := splitServicePort(service)
 
@@ -100,7 +109,7 @@ func (p *PipeForward) Dial(ctx context.Context, namespace, service string) (net.
 		return nil, err
 	}
 
-	podName, availablePorts, err := p.getPodNameFromService(namespace, service)
+	podName, availablePorts, err := p.getPodNameFromService(namespace, service, true)
 
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get a pod for service "+service)
@@ -134,10 +143,11 @@ func (p *PipeForward) Dial(ctx context.Context, namespace, service string) (net.
 	if err != nil {
 		return nil, err
 	}
+
 	portInt, err := strconv.Atoi(port)
 
 	if err != nil {
-		errors.Errorf("invalid port number %s for service %s", port, service)
+		return nil, errors.Errorf("invalid port number %s for service %s", port, service)
 	}
 
 	return createConnection(target, p.getNextRequestId(), service, portInt)

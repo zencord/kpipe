@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    appid: redis
+spec:
+  selector:
+    appid: redis
+  ports:
+    - protocol: TCP
+      name: redis
+      port: 6379
+      targetPort: 6379

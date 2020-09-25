@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  selector:
+    matchLabels:
+      appid: redis
+  strategy:
+    type: Recreate
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        appid: redis
+    spec:
+      restartPolicy: Always
+      containers:
+        - image: redis:5.0.3
+          name: redis
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 1
+            periodSeconds: 1
+          ports:
+            - containerPort: 6379
+              name: transport
+              protocol: TCP
