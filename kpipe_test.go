@@ -2,8 +2,8 @@ package kpipe
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"math/rand"
+	"net"
 	"testing"
 	"time"
 
@@ -11,17 +11,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestName(t *testing.T) {
-	forward, err := New(filepath.Join(os.Getenv("HOME"), ".kube", "config"))
-	require.NotNil(t, forward)
+func TestConnectingToRunningPod(t *testing.T) {
+	forward := createForwarder(t)
 
-	conn, err := forward.Dial(context.Background(), "default", "redis-76747cff6-bq4kz:6379")
+	conn, err := forward.Dial(context.Background(), "default", "redis")
 	require.Nil(t, err)
 
+	verifyPortCommunication(t, conn)
+}
+
+func TestBadPort(t *testing.T) {
+	forward := createForwarder(t)
+
+	conn, err := forward.Dial(context.Background(), "default", "redis:42")
+	require.Nil(t, err)
+
+	bytes := make([]byte, 1, 1)
+	_, err = conn.Read(bytes)
+
+	require.Contains(t, err.Error(), "Connection refused")
+}
+
+func TestBadService(t *testing.T) {
+	forward := createForwarder(t)
+
+	_, err := forward.Dial(context.Background(), "default", "fakaka")
+	require.Contains(t, err.Error(), "fakaka")
+}
+
+func createForwarder(t *testing.T) *PipeForward {
+	forward, err := New()
+	require.Nil(t, err)
+	return forward
+}
+
+func verifyPortCommunication(t *testing.T, conn net.Conn) {
 	redisClient := redis.NewConn(conn, 3*time.Second, 3*time.Second)
-	value, err := redisClient.Do("SET", "ANSWER", "42")
-	value, err = redis.Int(redisClient.Do("GET", "ANSWER"))
-
+	answer := rand.New(rand.NewSource(time.Now().UnixNano())).Int()
+	value, err := redisClient.Do("SET", "ANSWER", answer)
 	require.Nil(t, err)
-	require.Equal(t, 42, value)
+	value, err = redis.Int(redisClient.Do("GET", "ANSWER"))
+	require.Nil(t, err)
+	require.Equal(t, answer, value)
 }
